@@ -17,7 +17,7 @@ firmware, resets settings or only serves LG's own diagnostics).
   An LG G1 uses channel 10; an LG US70TR uses channel 2.
   Here, unlike the app, the channel of the last connection is tried first,
   and the service is only looked up when there is none, when the soundbar
-  refuses it, or when no soundbar answers on it: a lookup is itself a
+  refuses it, or when nothing answers on it at all: a lookup is itself a
   Bluetooth connection, which wakes a soundbar that is off (whether it also
   moves one that is on to Bluetooth is unconfirmed).
 - There is no application-level authentication, encryption or session ID.

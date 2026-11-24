@@ -211,6 +211,8 @@ class LGSoundbar:
         self._function_known = asyncio.Event()
         self._last_frame = 0.0
         self._ready = False
+        self._answered = False
+        self._closed_in_handshake = False
         self._close_reason: Exception | None = None
         self._initial_function: int | None = None
         # Whether to switch straight back if the connection moves the
@@ -325,8 +327,10 @@ class LGSoundbar:
 
         The channel of the last connection is tried first; without one, or
         if the soundbar refuses it, the connector looks up its Serial Port
-        service. If something answers on that channel but the handshake fails
-        (another service now on it), the service is looked up once more.
+        service. If that channel accepts the connection but nothing on it
+        answers (another service now on it), the service is looked up once
+        more; a soundbar that answered or closed the link is not connected to
+        again. A looked-up channel is kept even if the handshake fails.
         """
         async with self._connect_lock:
             if self._transport is not None:
@@ -342,16 +346,19 @@ class LGSoundbar:
         try:
             await self._connect_once(hint, timeout)
         except HandshakeFailed:
-            if hint is None:
+            # Only a channel that accepted the connection but sent nothing,
+            # not even the input, may now be another service. A soundbar
+            # that answered (and may have moved to Bluetooth) or closed the
+            # link (switching off, not trusted) is not connected to again.
+            if hint is None or self._answered or self._closed_in_handshake:
                 raise
             _LOGGER.debug(
-                "No soundbar answered on RFCOMM channel %s of %s; looking it up",
+                "Nothing answered on RFCOMM channel %s of %s; looking it up",
                 hint,
                 self.address,
             )
-            # Not kept: a soundbar that answers wrongly there would otherwise
-            # cost two connections every time.
-            self.channel = None
+            # The channel the lookup finds replaces the hint, even if this
+            # attempt fails too; a failure before then keeps the hint.
             await self._connect_once(None, timeout)
 
     async def _connect_once(self, channel: int | None, timeout: float) -> None:
@@ -555,6 +562,8 @@ class LGSoundbar:
     async def _connect_channel_when_free(
         self, channel: int | None, timeout: float
     ) -> None:
+        # Without a channel, each attempt looks the service up again: a
+        # connection that fails as busy does not say which channel it found.
         for attempt in range(BUSY_RETRIES + 1):
             try:
                 await self._connect_channel(channel, timeout)
@@ -573,6 +582,10 @@ class LGSoundbar:
             "looked up" if channel is None else channel,
         )
         self._ready = False
+        # Whether the soundbar sent anything, and whether it closed the link,
+        # during this connection's handshake.
+        self._answered = False
+        self._closed_in_handshake = False
         self._function_known.clear()
         self._initial_function = None
         self._restored_input = None
@@ -608,10 +621,22 @@ class LGSoundbar:
             # A connector whose protocol was not told the connection opened.
             opened_at = self._attach(protocol, transport)  # type: ignore[arg-type]
         self._timings["connecting"] = round(opened_at - started, 3)
+        used = transport.get_extra_info("rfcomm_channel")
+        _LOGGER.debug(
+            "Opened RFCOMM channel %s of %s (%s)",
+            used,
+            self.address,
+            "hint" if channel is not None and used == channel else "looked up",
+        )
+        if channel is None and isinstance(used, int):
+            # Kept even if the handshake fails, so the next attempt need not
+            # look it up again.
+            self.channel = used
         _LOGGER.debug("Sent %s as the connection opened", opening_request)
         try:
             await self._handshake()
         except NotConnected as err:
+            self._closed_in_handshake = True
             self._drop_transport()
             raise HandshakeFailed(
                 f"{self.address} closed the connection during the handshake"
@@ -623,7 +648,7 @@ class LGSoundbar:
         self._ready = True
         # Kept to try first next time; a connector that does not say keeps
         # the channel it was given.
-        if isinstance(used := transport.get_extra_info("rfcomm_channel"), int):
+        if isinstance(used, int):
             self.channel = used
         elif channel is not None:
             self.channel = channel
@@ -868,6 +893,7 @@ class LGSoundbar:
         self._transport.write(frame.encode())
 
     def _handle_frame(self, frame: Frame) -> None:
+        self._answered = True
         self._last_frame = asyncio.get_running_loop().time()
         _LOGGER.debug("Received %s", frame)
         self._answer_waiting(frame)

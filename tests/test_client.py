@@ -184,12 +184,15 @@ async def test_soundbar_closing_during_handshake_cannot_connect(
     soundbar: FakeSoundbar,
 ) -> None:
     soundbar.drop_after = 2
-    # No channel to fall back from: only one connection is made.
-    client = make_client(soundbar, channel=None)
+    client = make_client(soundbar)
 
     with pytest.raises(CannotConnect, match="closed the connection"):
         await client.connect()
     assert not client.connected
+    # The soundbar closed it (as when switching off): not connected to again,
+    # which would wake it, and the channel is kept.
+    assert soundbar.connections == 1
+    assert client.channel == 2
 
 
 async def test_without_a_channel_the_service_is_looked_up(
@@ -279,11 +282,14 @@ async def test_connection_dropping_while_reporting_fails_connect(
     frames = len(soundbar.sent)
     soundbar.sent.clear()
     soundbar.drop_after = frames
-    client = make_client(soundbar, channel=None)
+    client = make_client(soundbar)
 
+    connections = soundbar.connections
     with pytest.raises(HandshakeFailed):
         await client.connect()
     assert not client.connected
+    # It answered, so the channel is right: no second connection.
+    assert soundbar.connections == connections + 1
 
 
 async def test_a_channel_that_does_not_answer_is_looked_up_again(
@@ -323,8 +329,41 @@ async def test_a_handshake_failure_after_a_lookup_is_not_retried(
     ):
         await client.connect()
     assert tried == [2, None]
-    # Not kept, so the next connect looks the service up straight away.
-    assert client.channel is None
+    # The channel the lookup found replaces the hint.
+    assert client.channel == 10
+
+
+async def test_a_looked_up_channel_is_kept_when_the_handshake_fails(
+    soundbar: FakeSoundbar,
+) -> None:
+    soundbar.silent = True
+    client = make_client(soundbar, channel=None)
+    with (
+        patch("lg_soundbar_bluetooth.client.HANDSHAKE_TIMEOUT", 0.05),
+        pytest.raises(HandshakeFailed),
+    ):
+        await client.connect()
+    assert client.channel == 10
+
+
+async def test_a_failed_fallback_keeps_the_hint(soundbar: FakeSoundbar) -> None:
+    tried = []
+
+    async def connector(address, channel, factory, timeout, **kwargs):
+        tried.append(channel)
+        if channel is None:
+            raise OSError(112, "Host is down")
+        soundbar.silent = True
+        return await soundbar.connector(address, channel, factory, timeout, **kwargs)
+
+    client = make_client(soundbar, channel=2, connector=connector)
+    with (
+        patch("lg_soundbar_bluetooth.client.HANDSHAKE_TIMEOUT", 0.05),
+        pytest.raises(CannotConnect),
+    ):
+        await client.connect()
+    assert tried == [2, None]
+    assert client.channel == 2
 
 
 async def test_connect_reads_firmware_and_extras(soundbar: FakeSoundbar) -> None:
