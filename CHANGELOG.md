@@ -1,6 +1,44 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-11-24)
+
+### Bug Fixes
+
+- Only fall back from the stored channel when nothing answered on it
+  ([`9324366`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/9324366dd801ec5ea5897d878af2018154e2ac6a))
+
+- Look the service up again only when the stored channel accepted the connection but sent nothing; a
+  soundbar that answered, or closed the link (switching off, not trusted), is not connected to
+  again. - Keep the stored channel when the fallback fails before a lookup, and keep a looked-up
+  channel even if its handshake fails. - Log the channel each connection opened, and whether it was
+  the hint. - Note that busy retries without a channel look the service up again.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Features
+
+- Connect to the Serial Port service, with the last channel as a hint
+  ([`4526e36`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/4526e36fdc37525c5735d1b570bd3628791ce9f8))
+
+The connector opens the soundbar's Serial Port service through bluetooth-classic 0.5: the channel of
+  the last connection is tried first, and the service is looked up in the soundbar's SDP records
+  when there is none or the soundbar refuses it. The channel the link used is kept for next time. If
+  something answers on the hinted channel but the handshake fails, the hint is dropped and the
+  service is looked up once more.
+
+channel_finder, probe_channels and PROBE_CHANNELS are removed: there is no more sdptool lookup or
+  probing of likely channels. A failed lookup raises CannotConnect. FakeSoundbar's connector accepts
+  no channel and uses its Serial Port channel (10, as on a G1), reporting it as the transport's
+  rfcomm_channel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.2.1 (2026-11-24)
 
 ### Bug Fixes
