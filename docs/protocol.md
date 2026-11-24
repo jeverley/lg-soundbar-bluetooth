@@ -15,6 +15,11 @@ firmware, resets settings or only serves LG's own diagnostics).
 - Bluetooth Classic Serial Port Profile, UUID `00001101-0000-1000-8000-00805f9b34fb`.
 - The app looks the RFCOMM channel up with SDP rather than hard-coding it.
   An LG G1 uses channel 10; an LG US70TR uses channel 2.
+  Here, unlike the app, the channel of the last connection is tried first,
+  and the service is only looked up when there is none, when the soundbar
+  refuses it, or when no soundbar answers on it: a lookup is itself a
+  Bluetooth connection, which wakes a soundbar that is off (whether it also
+  moves one that is on to Bluetooth is unconfirmed).
 - There is no application-level authentication, encryption or session ID.
   Pairing is handled by the operating system.
 - The host must **trust** the soundbar, as phones trust what they pair with.

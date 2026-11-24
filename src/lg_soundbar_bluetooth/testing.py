@@ -17,8 +17,11 @@ ADDRESS = "AA:BB:CC:DD:EE:FF"
 class FakeTransport(asyncio.Transport):
     """Records writes and hands them to a fake soundbar."""
 
-    def __init__(self, soundbar: FakeSoundbar, protocol: asyncio.Protocol) -> None:
-        super().__init__()
+    def __init__(
+        self, soundbar: FakeSoundbar, protocol: asyncio.Protocol, channel: int
+    ) -> None:
+        # As bluetooth-classic's transport reports it.
+        super().__init__({"rfcomm_channel": channel})
         self._soundbar = soundbar
         self._protocol = protocol
         self._parser = FrameParser()
@@ -119,6 +122,8 @@ class FakeSoundbar:
         self.firmware = {7: ("MAIN", "B210414A"), 5: ("MICOM", "M2103110")}
         self.model = "G1"
         self.silent = False
+        # The RFCOMM channel its Serial Port service is on, as on a real G1.
+        self.serial_port_channel = 10
         # Close the connection after receiving this many frames, as a G1 did.
         self.drop_after: int | None = None
         self.transport: FakeTransport | None = None
@@ -300,20 +305,26 @@ class FakeSoundbar:
     async def connector(
         self,
         address: str,
-        channel: int,
+        channel: int | None,
         protocol_factory: Callable[[], asyncio.Protocol],
         timeout: float,
         *,
         write_on_connect: bytes,
     ) -> tuple[asyncio.Transport, asyncio.Protocol]:
-        """Connect to the fake soundbar, as the client's connector does."""
+        """Connect to the fake soundbar, as the client's connector does.
+
+        Without a channel, the Serial Port service's is used, as looking it
+        up would find.
+        """
         self.connections += 1
+        if channel is None:
+            channel = self.serial_port_channel
         self._fresh = True
         if self.off:
             self.off = False
             self.function = 0x07
         protocol = protocol_factory()
-        self.transport = FakeTransport(self, protocol)
+        self.transport = FakeTransport(self, protocol, channel)
         protocol.connection_made(self.transport)
         if (
             self.move_before_answering
