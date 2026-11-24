@@ -203,6 +203,8 @@ class LGSoundbar:
         )
         # The start-up step waiting for its answer, and the future to set.
         self._waiting_for: tuple[Frame, asyncio.Future[None]] | None = None
+        # One connect() at a time: a second call waits for the first.
+        self._connect_lock = asyncio.Lock()
         self._transport: asyncio.Transport | None = None
         self._protocol: _SoundbarProtocol | None = None
         self._callbacks: list[Callable[[], None]] = []
@@ -326,12 +328,13 @@ class LGSoundbar:
         If the soundbar answers on a known channel but the handshake fails, the
         channel is looked up again in case it moved.
         """
-        if self._transport is not None:
-            return
-        self.input_restore = None
-        await self._open(timeout, keep_input)
-        if keep_input:
-            self.input_restore = await self._restore_input()
+        async with self._connect_lock:
+            if self._transport is not None:
+                return
+            self.input_restore = None
+            await self._open(timeout, keep_input)
+            if keep_input:
+                self.input_restore = await self._restore_input()
 
     async def _open(self, timeout: float, keep_input: bool) -> None:
         self._keep_input = keep_input
@@ -1006,6 +1009,10 @@ class LGSoundbar:
         moved = sent is not None or self.state.function == Function.BLUETOOTH
         if not moved:
             return InputRestore(reported, False, None, True, 0)
+        # Nothing sent yet only if the move came after the start-up. Flags
+        # still unknown then mean the soundbar did not report the one that
+        # makes Optical, ARC and eARC one input, so the input's own code is the
+        # one to use, as the start-up does.
         code = sent or self._switch_back_code(reported) or reported
         if sent is not None and await self._wait_for_input(code):
             return InputRestore(reported, True, sent, True, 0)
@@ -1013,7 +1020,15 @@ class LGSoundbar:
             _LOGGER.debug(
                 "%s: selecting %02x again (attempt %s)", self.address, code, attempt
             )
-            await self.select_function(code)
+            try:
+                await self.select_function(code)
+            except NotConnected:
+                # Dropped meanwhile, as when switched off: the connection
+                # worked, so report the restore rather than fail connect().
+                _LOGGER.debug(
+                    "%s closed the connection while switching back", self.address
+                )
+                return InputRestore(reported, True, sent, False, attempt - 1)
             if await self._wait_for_input(code):
                 return InputRestore(reported, True, sent, True, attempt)
         _LOGGER.debug("%s did not go back to %02x", self.address, code)

@@ -12,6 +12,7 @@ from lg_soundbar_bluetooth import (
     CannotConnect,
     Feature,
     Frame,
+    GeneralCommand,
     HandshakeFailed,
     InputRestore,
     Level,
@@ -761,3 +762,74 @@ async def test_connect_leaves_the_input_without_restore(soundbar: FakeSoundbar) 
     await client.connect()
     assert client.restored_input is None
     assert client.state.function == 0x07
+
+
+async def test_switch_back_without_feature_flags_uses_the_input_code(
+    soundbar: FakeSoundbar,
+) -> None:
+    # On Optical; the soundbar never reports its extended feature flags and
+    # none are remembered, so the start-up switches back with Optical's code.
+    soundbar.function = 0xD0
+    soundbar.switch_to_bt_on_connect = True
+    soundbar.extra[(0x00, GeneralCommand.EXTENDED_SUPPORTED_FEATURE_LISTS)] = []
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0xD0, True, 0xD0, True, 0)
+    assert soundbar.sent.count(Frame(0x00, 0x01, b"\xd0")) == 1
+
+
+async def test_input_restore_after_a_move_after_the_start_up(
+    soundbar: FakeSoundbar,
+) -> None:
+    # Moved to Bluetooth only after the start-up, so nothing was sent then;
+    # without flags the input's own code is selected.
+    soundbar.function = 0xD0
+    soundbar.extra[(0x00, GeneralCommand.EXTENDED_SUPPORTED_FEATURE_LISTS)] = []
+    client = make_client(soundbar)
+    await client.connect()
+    client.state.function = 0x07
+    restore = await client._restore_input()
+    assert restore == InputRestore(0xD0, True, None, True, 1)
+    assert Frame(0x00, 0x01, b"\xd0") in soundbar.sent
+
+
+async def test_input_restore_when_the_soundbar_switches_off(
+    soundbar: FakeSoundbar,
+) -> None:
+    # It ignores the switch back, then is switched off while it is retried.
+    soundbar.function = 0xC0
+    soundbar.switch_to_bt_on_connect = True
+    soundbar.ignored_modes = {0xC0}
+    original = soundbar.replies_to
+    selections = 0
+
+    def switch_off_on_retry(frame: Frame) -> list[Frame]:
+        nonlocal selections
+        if frame == Frame(0x00, 0x01, b"\xc0"):
+            selections += 1
+            if selections == 2:
+                asyncio.get_running_loop().call_soon(soundbar.switch_off)
+        return original(frame)
+
+    soundbar.replies_to = switch_off_on_retry  # type: ignore[method-assign]
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore is not None
+    assert not client.input_restore.reached
+    assert not client.connected
+
+
+async def test_overlapping_connects_open_one_connection(
+    soundbar: FakeSoundbar,
+) -> None:
+    original = soundbar.connector
+
+    async def slow_connector(*args: Any, **kwargs: Any) -> Any:
+        # Opening a Bluetooth link takes a while.
+        await asyncio.sleep(0.05)
+        return await original(*args, **kwargs)
+
+    client = make_client(soundbar, connector=slow_connector)
+    await asyncio.gather(client.connect(), client.connect())
+    assert soundbar.connections == 1
+    assert client.connected
