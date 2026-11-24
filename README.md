@@ -88,6 +88,23 @@ Bluetooth input; with `keep_input=True` the client switches it straight
 back. `lg_soundbar_bluetooth.testing.FakeSoundbar` stands in for a soundbar
 in tests.
 
+### Finding and pairing a soundbar
+
+```python
+from bluetooth_classic import BluetoothClassic
+
+from lg_soundbar_bluetooth import is_lg_soundbar
+
+
+async def find() -> None:
+    async with BluetoothClassic() as bluetooth:
+        await bluetooth.discover()
+        for device in await bluetooth.devices():
+            if is_lg_soundbar(device.name, device.uuids, paired=device.paired):
+                await bluetooth.pair(device.address)
+                await bluetooth.trust(device.address)
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/jeverley/lg-soundbar-bluetooth/blob/main/CONTRIBUTING.md).
