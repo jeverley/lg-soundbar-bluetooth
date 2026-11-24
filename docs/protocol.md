@@ -18,8 +18,12 @@ firmware, resets settings or only serves LG's own diagnostics).
   Here, unlike the app, the channel of the last connection is tried first,
   and the service is only looked up when there is none, when the soundbar
   refuses it, or when nothing answers on it at all: a lookup is itself a
-  Bluetooth connection, which wakes a soundbar that is off (whether it also
-  moves one that is on to Bluetooth is unconfirmed).
+  Bluetooth connection, which wakes a soundbar that is off. On an LG G1
+  that is on, a lookup takes about 1.7 s and does not move it to
+  Bluetooth: an RFCOMM connection opened 0.13 s after it still has the
+  input it was on reported first (eARC, 0.075 s after opening), and the
+  move comes about 0.3 s after the connection opens, as without a lookup.
+  Its record names the service "Serial Port Server Port 1".
 - There is no application-level authentication, encryption or session ID.
   Pairing is handled by the operating system.
 - The host must **trust** the soundbar, as phones trust what they pair with.
