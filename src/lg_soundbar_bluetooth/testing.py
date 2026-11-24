@@ -305,26 +305,19 @@ class FakeSoundbar:
     async def connector(
         self,
         address: str,
-        channel: int | None,
         protocol_factory: Callable[[], asyncio.Protocol],
         timeout: float,
         *,
         write_on_connect: bytes,
     ) -> tuple[asyncio.Transport, asyncio.Protocol]:
-        """Connect to the fake soundbar, as the client's connector does.
-
-        Without a channel, the Serial Port service's is used, as looking it
-        up would find.
-        """
+        """Connect to the fake soundbar, as the client's connector does."""
         self.connections += 1
-        if channel is None:
-            channel = self.serial_port_channel
         self._fresh = True
         if self.off:
             self.off = False
             self.function = 0x07
         protocol = protocol_factory()
-        self.transport = FakeTransport(self, protocol, channel)
+        self.transport = FakeTransport(self, protocol, self.serial_port_channel)
         protocol.connection_made(self.transport)
         if (
             self.move_before_answering

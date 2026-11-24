@@ -15,17 +15,20 @@ firmware, resets settings or only serves LG's own diagnostics).
 - Bluetooth Classic Serial Port Profile, UUID `00001101-0000-1000-8000-00805f9b34fb`.
 - The app looks the RFCOMM channel up with SDP rather than hard-coding it.
   An LG G1 uses channel 10; an LG US70TR uses channel 2.
-  Here, unlike the app, the channel of the last connection is tried first,
-  and the service is only looked up when there is none, when the soundbar
-  refuses it, or when nothing answers on it at all: a lookup is itself a
-  Bluetooth connection, which wakes a soundbar that is off. On an LG G1
-  that is on, a lookup takes about 1.7 s and does not move it to
-  Bluetooth: an RFCOMM connection opened 0.13 s after it still has the
-  input it was on reported first (eARC, 0.075 s after opening), and the
-  move comes about 0.3 s after the connection opens, as without a lookup.
-  Its record names the service "Serial Port Server Port 1".
+  Here BlueZ connects the service by its UUID (its profile API) and finds
+  the channel itself, reusing records it already has: a connection takes
+  0.3 to 2.5 s on an LG G1, with no lookup of its own each time. The
+  opening request is written the moment BlueZ hands the connection over,
+  and an LG G1 still reports the input it was on before moving to
+  Bluetooth (first input 0.03 to 0.15 s after the handover, the move 0.19
+  to 0.63 s; once only 49 ms apart). A lookup of the service (SDP) is a
+  Bluetooth connection, which wakes a soundbar that is off; on an LG G1
+  that is on it takes about 1.7 s and does not move it to Bluetooth. Its
+  record names the service "Serial Port Server Port 1".
 - There is no application-level authentication, encryption or session ID.
-  Pairing is handled by the operating system.
+  Pairing is handled by the operating system. The app asks Android for an
+  encrypted link; here the link has BlueZ's security for client profiles
+  (whether that encrypts is unconfirmed), which an LG G1 accepts.
 - The host must **trust** the soundbar, as phones trust what they pair with.
   An LG G1 paired but not trusted by a Linux host accepts the RFCOMM
   connection, then resets it about 75 ms later, before answering anything.

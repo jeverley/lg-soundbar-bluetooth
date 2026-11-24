@@ -7,10 +7,6 @@ class LGSoundbarError(Exception):
     """Base class for library errors."""
 
 
-class BluetoothUnsupported(LGSoundbarError):
-    """Python on this host cannot open Bluetooth sockets."""
-
-
 class CannotConnect(LGSoundbarError):
     """The soundbar could not be reached or did not answer."""
 

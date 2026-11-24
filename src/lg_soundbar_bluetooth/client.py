@@ -14,8 +14,6 @@ from typing import Protocol
 
 from bluetooth_classic import (
     SERIAL_PORT,
-    RfcommUnsupportedError,
-    Security,
     normalize_address,
     open_rfcomm,
 )
@@ -39,7 +37,6 @@ from .const import (
     UtilityCommand,
 )
 from .exceptions import (
-    BluetoothUnsupported,
     CannotConnect,
     HandshakeFailed,
     NotConnected,
@@ -85,7 +82,6 @@ class Connector(Protocol):
     def __call__(
         self,
         address: str,
-        channel: int | None,
         protocol_factory: Callable[[], asyncio.Protocol],
         timeout: float,
         *,
@@ -93,38 +89,26 @@ class Connector(Protocol):
     ) -> Awaitable[tuple[asyncio.Transport, asyncio.Protocol]]:
         """Open the soundbar's serial port, writing write_on_connect at once.
 
-        ``channel`` is the RFCOMM channel to try first, if known. The
-        transport's ``get_extra_info("rfcomm_channel")`` is the channel used.
+        The transport's ``get_extra_info("rfcomm_channel")``, if given, is
+        the channel the link is on.
         """
 
 
 async def _open_link(
     address: str,
-    channel: int | None,
     protocol_factory: Callable[[], asyncio.Protocol],
     timeout: float,
     *,
     write_on_connect: bytes,
 ) -> tuple[asyncio.Transport, asyncio.Protocol]:
-    """Open the soundbar's Serial Port service with an encrypted link.
-
-    The channel given is tried first; without one, or if the soundbar refuses
-    it, the service's channel is looked up in its SDP records. Android
-    encrypts the link to a paired device. Whether soundbars need it is
-    untested.
-    """
-    try:
-        return await open_rfcomm(
-            address,
-            protocol_factory,
-            service=SERIAL_PORT,
-            channel=channel,
-            timeout=timeout,
-            write_on_connect=write_on_connect,
-            security=Security.MEDIUM,
-        )
-    except RfcommUnsupportedError as err:
-        raise BluetoothUnsupported(str(err)) from err
+    """Open the soundbar's Serial Port service; BlueZ makes the connection."""
+    return await open_rfcomm(
+        address,
+        protocol_factory,
+        service=SERIAL_PORT,
+        timeout=timeout,
+        write_on_connect=write_on_connect,
+    )
 
 
 class _SoundbarProtocol(asyncio.Protocol):
@@ -172,7 +156,6 @@ class LGSoundbar:
     def __init__(
         self,
         address: str,
-        channel: int | None = None,
         *,
         connector: Connector = _open_link,
         send_interval: float = SEND_INTERVAL,
@@ -184,8 +167,8 @@ class LGSoundbar:
     ) -> None:
         """Create a client; call connect() to open the connection."""
         self.address = normalize_address(address)
-        # The RFCOMM channel of the last connection, tried first next time.
-        self.channel = channel
+        # The RFCOMM channel of the last connection, if the connector said.
+        self.channel: int | None = None
         self.state = SoundbarState()
         self._connector = connector
         self._send_interval = send_interval
@@ -211,8 +194,6 @@ class LGSoundbar:
         self._function_known = asyncio.Event()
         self._last_frame = 0.0
         self._ready = False
-        self._answered = False
-        self._closed_in_handshake = False
         self._close_reason: Exception | None = None
         self._initial_function: int | None = None
         # Whether to switch straight back if the connection moves the
@@ -325,12 +306,8 @@ class LGSoundbar:
         connect() then waits until the soundbar is on that input, selects it
         again if it is not, and records how it went in input_restore.
 
-        The channel of the last connection is tried first; without one, or
-        if the soundbar refuses it, the connector looks up its Serial Port
-        service. If that channel accepts the connection but nothing on it
-        answers (another service now on it), the service is looked up once
-        more; a soundbar that answered or closed the link is not connected to
-        again. A looked-up channel is kept even if the handshake fails.
+        The connector opens the soundbar's Serial Port service; BlueZ finds
+        its channel.
         """
         async with self._connect_lock:
             if self._transport is not None:
@@ -342,32 +319,12 @@ class LGSoundbar:
 
     async def _open(self, timeout: float, keep_input: bool) -> None:
         self._keep_input = keep_input
-        hint = self.channel
         try:
-            await self._connect_once(hint, timeout)
-        except HandshakeFailed:
-            # Only a channel that accepted the connection but sent nothing,
-            # not even the input, may now be another service. A soundbar
-            # that answered (and may have moved to Bluetooth) or closed the
-            # link (switching off, not trusted) is not connected to again.
-            if hint is None or self._answered or self._closed_in_handshake:
-                raise
-            _LOGGER.debug(
-                "Nothing answered on RFCOMM channel %s of %s; looking it up",
-                hint,
-                self.address,
-            )
-            # The channel the lookup finds replaces the hint, even if this
-            # attempt fails too; a failure before then keeps the hint.
-            await self._connect_once(None, timeout)
-
-    async def _connect_once(self, channel: int | None, timeout: float) -> None:
-        try:
-            await self._connect_channel_when_free(channel, timeout)
+            await self._connect_when_free(timeout)
         except CannotConnect:
             raise
         except (OSError, TimeoutError) as err:
-            # Unreachable, refused, or the service could not be looked up.
+            # Unreachable, refused, or BlueZ could not connect the service.
             raise CannotConnect(
                 f"Could not connect to {self.address}: {err!r}"
             ) from err
@@ -559,33 +516,21 @@ class LGSoundbar:
             Frame(Category.GENERAL, GeneralCommand.POWER_CONTROL, bytes((0,)))
         )
 
-    async def _connect_channel_when_free(
-        self, channel: int | None, timeout: float
-    ) -> None:
-        # Without a channel, each attempt looks the service up again: a
-        # connection that fails as busy does not say which channel it found.
+    async def _connect_when_free(self, timeout: float) -> None:
         for attempt in range(BUSY_RETRIES + 1):
             try:
-                await self._connect_channel(channel, timeout)
+                await self._connect_once(timeout)
             except OSError as err:
                 if err.errno != errno.EBUSY or attempt == BUSY_RETRIES:
                     raise
-                _LOGGER.debug("RFCOMM channel %s is still busy; retrying", channel)
+                _LOGGER.debug("RFCOMM link to %s is still busy; retrying", self.address)
                 await asyncio.sleep(BUSY_DELAY)
             else:
                 return
 
-    async def _connect_channel(self, channel: int | None, timeout: float) -> None:
-        _LOGGER.debug(
-            "Connecting to %s on RFCOMM channel %s",
-            self.address,
-            "looked up" if channel is None else channel,
-        )
+    async def _connect_once(self, timeout: float) -> None:
+        _LOGGER.debug("Connecting to the Serial Port service of %s", self.address)
         self._ready = False
-        # Whether the soundbar sent anything, and whether it closed the link,
-        # during this connection's handshake.
-        self._answered = False
-        self._closed_in_handshake = False
         self._function_known.clear()
         self._initial_function = None
         self._restored_input = None
@@ -611,7 +556,6 @@ class LGSoundbar:
         opening_request = Frame(Category.GENERAL, GeneralCommand.MODE)
         transport, protocol = await self._connector(
             self.address,
-            channel,
             lambda: _SoundbarProtocol(self),
             timeout,
             write_on_connect=opening_request.encode(),
@@ -622,21 +566,13 @@ class LGSoundbar:
             opened_at = self._attach(protocol, transport)  # type: ignore[arg-type]
         self._timings["connecting"] = round(opened_at - started, 3)
         used = transport.get_extra_info("rfcomm_channel")
-        _LOGGER.debug(
-            "Opened RFCOMM channel %s of %s (%s)",
-            used,
-            self.address,
-            "hint" if channel is not None and used == channel else "looked up",
-        )
-        if channel is None and isinstance(used, int):
-            # Kept even if the handshake fails, so the next attempt need not
-            # look it up again.
+        if isinstance(used, int):
             self.channel = used
+        _LOGGER.debug("Opened RFCOMM channel %s of %s", used, self.address)
         _LOGGER.debug("Sent %s as the connection opened", opening_request)
         try:
             await self._handshake()
         except NotConnected as err:
-            self._closed_in_handshake = True
             self._drop_transport()
             raise HandshakeFailed(
                 f"{self.address} closed the connection during the handshake"
@@ -646,12 +582,6 @@ class LGSoundbar:
             self._drop_transport()
             raise
         self._ready = True
-        # Kept to try first next time; a connector that does not say keeps
-        # the channel it was given.
-        if isinstance(used, int):
-            self.channel = used
-        elif channel is not None:
-            self.channel = channel
         if self.state.features is not None:
             self.known_features = self.state.features
         self._ready_at = time.monotonic()
@@ -893,7 +823,6 @@ class LGSoundbar:
         self._transport.write(frame.encode())
 
     def _handle_frame(self, frame: Frame) -> None:
-        self._answered = True
         self._last_frame = asyncio.get_running_loop().time()
         _LOGGER.debug("Received %s", frame)
         self._answer_waiting(frame)

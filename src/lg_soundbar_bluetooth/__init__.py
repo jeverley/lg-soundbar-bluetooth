@@ -2,7 +2,7 @@
 
 __version__ = "0.3.0"
 
-from bluetooth_classic import normalize_address, rfcomm_supported
+from bluetooth_classic import normalize_address
 
 from .client import InputRestore, LGSoundbar
 from .const import (
@@ -25,7 +25,6 @@ from .const import (
 )
 from .discovery import is_lg_soundbar, model_from_name
 from .exceptions import (
-    BluetoothUnsupported,
     CannotConnect,
     HandshakeFailed,
     LGSoundbarError,
@@ -48,7 +47,6 @@ __all__ = [
     "SPECIAL_EQ_NAMES",
     "SPP_UUID",
     "SWITCH_COMMANDS",
-    "BluetoothUnsupported",
     "CannotConnect",
     "Category",
     "Feature",
@@ -76,7 +74,6 @@ __all__ = [
     "normalize_address",
     "offered_function_names",
     "offered_sound_mode_names",
-    "rfcomm_supported",
     "sound_mode_for_name",
     "sound_mode_name",
 ]
