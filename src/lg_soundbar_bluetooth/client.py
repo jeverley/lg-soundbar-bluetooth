@@ -9,6 +9,7 @@ import logging
 import time
 from asyncio import FIRST_COMPLETED
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from bluetooth_classic import (
@@ -58,6 +59,10 @@ SEND_INTERVAL = 0.05
 # As the LG app does for each start-up step: wait this long for the answer,
 # asking up to ASK_ATTEMPTS times. Unlike the app, carry on without it.
 ASK_TIMEOUT = 3.0
+# How long to wait for the soundbar to reach the input switched back to, and
+# how many more times to select it if it does not.
+SWITCH_WAIT = 3.0
+SWITCH_ATTEMPTS = 2
 ASK_ATTEMPTS = 3
 # As the LG app does, wait this long for a soundbar with an MTK chip that
 # says it is still starting up, and run the start-up again once it is done.
@@ -141,6 +146,23 @@ class _SoundbarProtocol(asyncio.Protocol):
         self._client._handle_connection_lost(self, exc)
 
 
+@dataclass(frozen=True, slots=True)
+class InputRestore:
+    """How putting back the input a connection moved the soundbar from went."""
+
+    #: The input the soundbar reported first, before any move; None if it
+    #: moved before answering.
+    reported: int | None
+    #: Whether the connection moved it to Bluetooth.
+    moved: bool
+    #: The code sent to switch back as the move was seen, if any.
+    sent: int | None
+    #: Whether it ended up on the input it reported.
+    reached: bool
+    #: How many more times the input was selected after the first switch.
+    attempts: int
+
+
 class LGSoundbar:
     """An LG soundbar reached over Bluetooth Classic RFCOMM."""
 
@@ -156,6 +178,7 @@ class LGSoundbar:
         settle_quiet: float = SETTLE_QUIET,
         settle_max: float = SETTLE_MAX,
         ask_timeout: float = ASK_TIMEOUT,
+        switch_wait: float = SWITCH_WAIT,
         known_features: Iterable[int] | None = None,
     ) -> None:
         """Create a client; call connect() to open the connection."""
@@ -169,6 +192,9 @@ class LGSoundbar:
         self._settle_quiet = settle_quiet
         self._settle_max = settle_max
         self._ask_timeout = ask_timeout
+        self._switch_wait = switch_wait
+        # How the last connect(keep_input=True) put the input back.
+        self.input_restore: InputRestore | None = None
         # Extended feature flags from an earlier connection. Until this
         # connection's arrive, they decide how to switch back to Optical, ARC
         # or eARC, so that need not wait for them. Not shown in the state.
@@ -292,6 +318,8 @@ class LGSoundbar:
         with the code it reported, or for Optical, ARC and eARC once the
         feature flags tell whether they are one input (selected as
         Optical/HDMI ARC, as the LG app does; a G1 ignores its eARC code).
+        connect() then waits until the soundbar is on that input, selects it
+        again if it is not, and records how it went in input_restore.
 
         When no channel is known it is looked up with sdptool, and failing that
         the usual channels are tried in turn until one answers the handshake.
@@ -300,6 +328,12 @@ class LGSoundbar:
         """
         if self._transport is not None:
             return
+        self.input_restore = None
+        await self._open(timeout, keep_input)
+        if keep_input:
+            self.input_restore = await self._restore_input()
+
+    async def _open(self, timeout: float, keep_input: bool) -> None:
         self._keep_input = keep_input
         if (saved := self.channel) is not None:
             try:
@@ -930,21 +964,70 @@ class LGSoundbar:
         function = self._moved_from
         if function is None or self._transport is None:
             return
+        if (code := self._switch_back_code(function)) is not None:
+            self._switch_back(code)
+
+    def _switch_back_code(self, function: int) -> int | None:
+        """Return the code that selects an input, or None until it is known.
+
+        Optical, ARC and eARC are selected as Optical/HDMI ARC when the
+        feature flags say they are one input, which takes the flags of this
+        connection or, until they arrive, of an earlier one.
+        """
         if function not in COMBINED_ARC_FUNCTIONS:
-            self._switch_back(function)
-            return
+            return function
         flags = self.state.features
         if flags is None and (flags := self.known_features) is not None:
             _LOGGER.debug(
                 "%s: switching back with the feature flags of an earlier connection",
                 self.address,
             )
-        if flags is not None:
-            self._switch_back(
-                Function.OPT_HDMI_ARC
-                if Feature.OPT_HDMI_ARC_SUPPORT in flags
-                else function
+        if flags is None:
+            return None
+        return (
+            Function.OPT_HDMI_ARC if Feature.OPT_HDMI_ARC_SUPPORT in flags else function
+        )
+
+    @staticmethod
+    def _same_input(function: int | None, code: int) -> bool:
+        """Return whether the soundbar is on the input a code selects."""
+        return function == code or (
+            function in COMBINED_ARC_FUNCTIONS and code in COMBINED_ARC_FUNCTIONS
+        )
+
+    async def _restore_input(self) -> InputRestore:
+        """Make sure the soundbar ends up on the input the connection moved."""
+        reported = self._initial_function
+        sent = self._restored_input
+        if reported is None or reported == Function.BLUETOOTH:
+            # Moved before answering, or already on Bluetooth: nothing known
+            # to go back to.
+            return InputRestore(reported, False, None, reported is not None, 0)
+        moved = sent is not None or self.state.function == Function.BLUETOOTH
+        if not moved:
+            return InputRestore(reported, False, None, True, 0)
+        code = sent or self._switch_back_code(reported) or reported
+        if sent is not None and await self._wait_for_input(code):
+            return InputRestore(reported, True, sent, True, 0)
+        for attempt in range(1, SWITCH_ATTEMPTS + 1):
+            _LOGGER.debug(
+                "%s: selecting %02x again (attempt %s)", self.address, code, attempt
             )
+            await self.select_function(code)
+            if await self._wait_for_input(code):
+                return InputRestore(reported, True, sent, True, attempt)
+        _LOGGER.debug("%s did not go back to %02x", self.address, code)
+        return InputRestore(reported, True, sent, False, SWITCH_ATTEMPTS)
+
+    async def _wait_for_input(self, code: int) -> bool:
+        """Wait until the soundbar reports the input a code selects."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._switch_wait
+        while loop.time() < deadline and self.connected:
+            if self._same_input(self.state.function, code):
+                return True
+            await asyncio.sleep(0.05)
+        return self._same_input(self.state.function, code)
 
     def _note_boot_state(self, value: int) -> None:
         """Note an MTK start-up state reported while connecting.

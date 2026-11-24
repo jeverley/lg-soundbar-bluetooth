@@ -4,7 +4,7 @@ __version__ = "0.1.0"
 
 from bluetooth_classic import normalize_address, rfcomm_supported
 
-from .client import LGSoundbar
+from .client import InputRestore, LGSoundbar
 from .const import (
     LEVEL_COMMANDS,
     SETTING_FEATURES,
@@ -59,6 +59,7 @@ __all__ = [
     "FunctionCommand",
     "GeneralCommand",
     "HandshakeFailed",
+    "InputRestore",
     "LGSoundbar",
     "LGSoundbarError",
     "Level",

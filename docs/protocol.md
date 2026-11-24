@@ -463,8 +463,11 @@ What an LG G1 (with Auto Power on and BT LOCK off) does, as tested:
   remote does not do this. Unconfirmed why; possibly HDMI-CEC with the TV.
   So while connecting, if it leaves the input it was switched back to, this
   library selects it once more (Optical, ARC and eARC count as one).
-  To review: this only shortens the time on eARC (about 1 second instead of
-  6 with an application's own retry), and has only been
+  After the start-up, `connect(keep_input=True)` also waits for the
+  soundbar to reach the input and selects it again if it has not (up to
+  twice), reporting how it went in `input_restore`.
+  To review: the start-up re-select only shortens the time on eARC (about 1
+  second instead of a few with the check after it), and has only been
   seen with nothing on the HDMI input; drop it if it is not worth keeping.
 - **Switching back before the move rarely stops it.** Selecting the input
   as soon as it was reported (Optical/HDMI ARC once the flags were known,

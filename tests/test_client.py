@@ -13,6 +13,7 @@ from lg_soundbar_bluetooth import (
     Feature,
     Frame,
     HandshakeFailed,
+    InputRestore,
     Level,
     LGSoundbar,
     NotConnected,
@@ -36,6 +37,7 @@ def make_client(
         settle_quiet=0.05,
         settle_max=0.5,
         ask_timeout=kwargs.pop("ask_timeout", 0.2),
+        switch_wait=kwargs.pop("switch_wait", 0.2),
         **kwargs,
     )
 
@@ -646,10 +648,11 @@ async def test_connect_selects_the_input_again_if_the_soundbar_leaves_it(
     assert "switched back again" in client.timings
 
 
-async def test_connect_selects_the_input_again_only_once(
+async def test_connect_selects_the_input_again_once_while_starting_up(
     soundbar: FakeSoundbar,
 ) -> None:
-    # It leaves HDMI again after the second selection; no third one.
+    # It leaves HDMI again after the second selection; the start-up does not
+    # select it a third time, but the check after it does, and it sticks.
     soundbar.function = 0xC0
     soundbar.switch_to_bt_on_connect = True
     soundbar.jump_after_select = 0xC4
@@ -667,8 +670,65 @@ async def test_connect_selects_the_input_again_only_once(
     soundbar.replies_to = jump_twice  # type: ignore[method-assign]
     client = make_client(soundbar)
     await client.connect(keep_input=True)
-    assert soundbar.sent.count(Frame(0x00, 0x01, b"\xc0")) == 2
-    assert client.state.function == 0x40
+    assert soundbar.sent.count(Frame(0x00, 0x01, b"\xc0")) == 3
+    assert client.state.function == 0xC0
+    assert client.input_restore == InputRestore(0xC0, True, 0xC0, True, 1)
+
+
+async def test_input_restore_when_the_switch_back_takes(
+    soundbar: FakeSoundbar,
+) -> None:
+    soundbar.function = 0xC0
+    soundbar.switch_to_bt_on_connect = True
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0xC0, True, 0xC0, True, 0)
+    assert soundbar.sent.count(Frame(0x00, 0x01, b"\xc0")) == 1
+
+
+async def test_input_restore_selects_again_when_ignored(
+    soundbar: FakeSoundbar,
+) -> None:
+    soundbar.function = 0xC0
+    soundbar.switch_to_bt_on_connect = True
+    soundbar.ignored_once = {0xC0}
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0xC0, True, 0xC0, True, 1)
+    assert client.state.function == 0xC0
+
+
+async def test_input_restore_gives_up(soundbar: FakeSoundbar) -> None:
+    soundbar.function = 0xC0
+    soundbar.switch_to_bt_on_connect = True
+    soundbar.ignored_modes = {0xC0}
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0xC0, True, 0xC0, False, 2)
+    assert soundbar.sent.count(Frame(0x00, 0x01, b"\xc0")) == 3
+
+
+async def test_input_restore_when_the_connection_did_not_move_it(
+    soundbar: FakeSoundbar,
+) -> None:
+    soundbar.function = 0xC0
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0xC0, False, None, True, 0)
+    assert Frame(0x00, 0x01, b"\xc0") not in soundbar.sent
+
+
+async def test_input_restore_on_bluetooth(soundbar: FakeSoundbar) -> None:
+    soundbar.function = 0x07
+    client = make_client(soundbar)
+    await client.connect(keep_input=True)
+    assert client.input_restore == InputRestore(0x07, False, None, True, 0)
+
+
+async def test_no_input_restore_without_keep_input(soundbar: FakeSoundbar) -> None:
+    client = make_client(soundbar)
+    await client.connect()
+    assert client.input_restore is None
 
 
 async def test_connect_switches_back_with_remembered_flags(

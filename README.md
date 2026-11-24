@@ -85,7 +85,7 @@ asyncio.run(main())
 
 Connecting wakes a soundbar that is off, and moves one that is on to its
 Bluetooth input; with `keep_input=True` the client switches it straight
-back. `lg_soundbar_bluetooth.testing.FakeSoundbar` stands in for a soundbar
+back, makes sure it got there, and reports how in `input_restore`. `lg_soundbar_bluetooth.testing.FakeSoundbar` stands in for a soundbar
 in tests.
 
 ### Finding and pairing a soundbar
