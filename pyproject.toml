@@ -1,6 +1,6 @@
 [project]
 name = "lg-soundbar-bluetooth"
-version = "0.1.0"
+version = "0.2.0"
 license = "Apache-2.0"
 description = "Control LG soundbars over Bluetooth"
 authors = [{ name = "jeverley", email = "46714706+jeverley@users.noreply.github.com" }]
