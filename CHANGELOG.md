@@ -1,6 +1,36 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-11-24)
+
+### Documentation
+
+- Record that an SDP lookup does not move a G1 to Bluetooth
+  ([`8a91647`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/8a916471015f713571fe55361b3c19fe7ceca99f))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Features
+
+- Connect through BlueZ's profile API, with no channel of our own
+  ([`ac4c28a`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/ac4c28ab150ee834a96b8d440d4e5c96d7c0a6a5))
+
+The connector opens the soundbar's Serial Port service with bluetooth-classic 0.6, where BlueZ makes
+  the connection and finds the channel. The connector loses its channel argument, LGSoundbar its
+  channel hint, and the "look up again if nothing answered" retry goes: a soundbar that does not
+  answer is a failed connection. client.channel still reports the channel each connection used.
+
+Link security is BlueZ's for client profiles; Security.MEDIUM is no longer asked for.
+  BluetoothUnsupported and the rfcomm_supported re-export are removed, as no Bluetooth sockets of
+  Python's own are needed. FakeSoundbar's connector follows.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.3.0 (2026-11-24)
 
 ### Bug Fixes
