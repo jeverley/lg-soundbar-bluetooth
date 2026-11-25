@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from bluetooth_classic import (
     SERIAL_PORT,
-    RfcommClient,
+    RfcommConnection,
     establish_rfcomm_connection,
     normalize_address,
 )
@@ -75,26 +75,26 @@ CLOSE_TIMEOUT = 5.0
 
 
 class Link(Protocol):
-    """A connection to the soundbar's serial port, as RfcommClient is."""
+    """A connection to the soundbar's serial port, as RfcommConnection is."""
 
     #: When the link last opened, in ``time.monotonic()`` seconds.
-    connected_at: float | None
-    #: Why the link last ended: ``None`` when closed here.
-    disconnect_reason: Exception | None
+    opened_at: float | None
+    #: Why the link last closed: ``None`` when closed here.
+    close_reason: Exception | None
 
     @property
-    def is_connected(self) -> bool:
+    def is_open(self) -> bool:
         """Return whether the link is open."""
 
-    async def connect(
-        self, *, timeout: float | None = None, write_on_connect: bytes = b""
+    async def open(
+        self, *, timeout: float | None = None, write_on_open: bytes = b""
     ) -> None:
-        """Open the link, sending write_on_connect the moment it opens."""
+        """Open the link, sending write_on_open the moment it opens."""
 
     def write_nowait(self, data: bytes) -> None:
         """Queue bytes to send, in order."""
 
-    async def disconnect(self) -> None:
+    async def close(self) -> None:
         """Close the link and wait until it is closed."""
 
 
@@ -106,23 +106,23 @@ class LinkFactory(Protocol):
         address: str,
         *,
         data_callback: Callable[[bytes], None],
-        disconnected_callback: Callable[[Any], None],
+        closed_callback: Callable[[Any], None],
     ) -> Link:
         """Return a link that passes data and its end to the callbacks."""
 
 
-def _rfcomm_client(
+def _rfcomm_connection(
     address: str,
     *,
     data_callback: Callable[[bytes], None],
-    disconnected_callback: Callable[[Any], None],
-) -> RfcommClient:
+    closed_callback: Callable[[Any], None],
+) -> RfcommConnection:
     """The soundbar's Serial Port service, through bluetooth-classic."""
-    return RfcommClient(
+    return RfcommConnection(
         address,
         service=SERIAL_PORT,
         data_callback=data_callback,
-        disconnected_callback=disconnected_callback,
+        closed_callback=closed_callback,
     )
 
 
@@ -150,7 +150,7 @@ class LGSoundbar:
         self,
         address: str,
         *,
-        link_factory: LinkFactory = _rfcomm_client,
+        link_factory: LinkFactory = _rfcomm_connection,
         send_interval: float = SEND_INTERVAL,
         settle_quiet: float = SETTLE_QUIET,
         settle_max: float = SETTLE_MAX,
@@ -329,7 +329,7 @@ class LGSoundbar:
             return
         try:
             async with asyncio.timeout(CLOSE_TIMEOUT):
-                await link.disconnect()
+                await link.close()
         except TimeoutError:
             _LOGGER.debug("Connection to %s did not close in time", self.address)
             if self._link is link:
@@ -544,20 +544,20 @@ class LGSoundbar:
             if self._link is not link:
                 return
             if self._opened_at is None:
-                self._opened_at = link.connected_at or time.monotonic()
+                self._opened_at = link.opened_at or time.monotonic()
             for frame in parser.feed(data):
                 self._handle_frame(frame)
 
-        def on_disconnected(lost: Link) -> None:
-            self._handle_connection_lost(lost, lost.disconnect_reason)
+        def on_closed(lost: Link) -> None:
+            self._handle_connection_lost(lost, lost.close_reason)
 
         link = self._link_factory(
-            self.address, data_callback=on_data, disconnected_callback=on_disconnected
+            self.address, data_callback=on_data, closed_callback=on_closed
         )
         self._link = link
         try:
             await establish_rfcomm_connection(
-                link, timeout=timeout, write_on_connect=opening_request.encode()
+                link, timeout=timeout, write_on_open=opening_request.encode()
             )
         except BaseException:
             if self._link is link:
@@ -570,7 +570,7 @@ class LGSoundbar:
                 f" ({self._close_reason!r})"
             )
         opened_at = self._opened_at = (
-            self._opened_at or link.connected_at or time.monotonic()
+            self._opened_at or link.opened_at or time.monotonic()
         )
         self._timings["connecting"] = round(opened_at - started, 3)
         _LOGGER.debug("Opened the Serial Port service of %s", self.address)
@@ -811,7 +811,7 @@ class LGSoundbar:
         return function
 
     async def _send(self, frame: Frame) -> None:
-        if self._link is None or not self._link.is_connected:
+        if self._link is None or not self._link.is_open:
             raise NotConnected(f"{self.address} is not connected")
         self._write(frame)
 
@@ -1079,7 +1079,7 @@ class LGSoundbar:
         self._ready = False
         if link is None:
             return
-        task = asyncio.ensure_future(link.disconnect())
+        task = asyncio.ensure_future(link.close())
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
         # Shielded: a cancelled connect still closes the link it opened.

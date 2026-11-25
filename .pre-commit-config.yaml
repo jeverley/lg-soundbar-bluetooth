@@ -40,4 +40,4 @@ repos:
     rev: v1.15.0
     hooks:
       - id: mypy
-        additional_dependencies: ["bluetooth-classic>=0.8.2", pytest]
+        additional_dependencies: ["bluetooth-classic>=0.9.0", pytest]

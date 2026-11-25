@@ -200,7 +200,7 @@ async def test_bluez_failing_to_connect_cannot_connect(
         async def refuse(**kwargs: Any) -> None:
             raise RfcommConnectError(f"BlueZ could not connect to {address}")
 
-        link.connect = refuse  # type: ignore[method-assign]
+        link.open = refuse  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -218,7 +218,7 @@ async def test_unreachable_soundbar_cannot_connect(soundbar: FakeSoundbar) -> No
             tried.append(address)
             raise OSError(112, "Host is down")
 
-        link.connect = down  # type: ignore[method-assign]
+        link.open = down  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -235,7 +235,7 @@ async def test_busy_channel_is_retried(
 
     def link_factory(address: str, **callbacks: Any) -> Any:
         link = soundbar.link_factory(address, **callbacks)
-        connect = link.connect
+        connect = link.open
 
         async def busy_at_first(**kwargs: Any) -> None:
             attempts.append(address)
@@ -243,7 +243,7 @@ async def test_busy_channel_is_retried(
                 raise OSError(16, "Resource busy")
             await connect(**kwargs)
 
-        link.connect = busy_at_first  # type: ignore[method-assign]
+        link.open = busy_at_first  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -788,14 +788,14 @@ async def test_overlapping_connects_open_one_connection(
 ) -> None:
     def link_factory(address: str, **callbacks: Any) -> Any:
         link = soundbar.link_factory(address, **callbacks)
-        connect = link.connect
+        connect = link.open
 
         async def slow(**kwargs: Any) -> None:
             # Opening a Bluetooth link takes a while.
             await asyncio.sleep(0.05)
             await connect(**kwargs)
 
-        link.connect = slow  # type: ignore[method-assign]
+        link.open = slow  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -809,14 +809,14 @@ async def test_a_link_dropped_as_it_opens_cannot_connect(
 ) -> None:
     def link_factory(address: str, **callbacks: Any) -> Any:
         link = soundbar.link_factory(address, **callbacks)
-        connect = link.connect
+        connect = link.open
 
         async def drop_at_once(**kwargs: Any) -> None:
             await connect(**kwargs)
-            link.close(ConnectionResetError(104, "Connection reset by peer"))
+            link.drop(ConnectionResetError(104, "Connection reset by peer"))
             await asyncio.sleep(0)
 
-        link.connect = drop_at_once  # type: ignore[method-assign]
+        link.open = drop_at_once  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -833,14 +833,14 @@ async def test_nothing_is_sent_while_the_link_is_opening(
 
     def link_factory(address: str, **callbacks: Any) -> Any:
         link = soundbar.link_factory(address, **callbacks)
-        connect = link.connect
+        connect = link.open
 
         async def slow(**kwargs: Any) -> None:
             opening.set()
             await asyncio.sleep(0.05)
             await connect(**kwargs)
 
-        link.connect = slow  # type: ignore[method-assign]
+        link.open = slow  # type: ignore[method-assign]
         return link
 
     client = make_client(soundbar, link_factory=link_factory)
@@ -864,7 +864,7 @@ async def test_a_close_that_hangs_lets_the_link_go(
         async def hang() -> None:
             await asyncio.sleep(10)
 
-        link.disconnect = hang  # type: ignore[method-assign]
+        link.close = hang  # type: ignore[method-assign]
         links.append(link)
         return link
 
@@ -873,7 +873,7 @@ async def test_a_close_that_hangs_lets_the_link_go(
     await client.disconnect()
     assert not client.connected
     # The next connect opens a new link rather than finding the old one.
-    links[0].close()
+    links[0].drop()
     await client.connect()
     assert client.connected
     assert len(links) == 2
