@@ -37,6 +37,11 @@ class FakeLink:
         self.disconnect_reason: Exception | None = None
         self._ended: asyncio.Event | None = None
 
+    @property
+    def is_connected(self) -> bool:
+        """Return whether the link is open."""
+        return not self.closed
+
     async def connect(
         self, *, timeout: float | None = None, write_on_connect: bytes = b""
     ) -> None:

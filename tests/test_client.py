@@ -802,3 +802,78 @@ async def test_overlapping_connects_open_one_connection(
     await asyncio.gather(client.connect(), client.connect())
     assert soundbar.connections == 1
     assert client.connected
+
+
+async def test_a_link_dropped_as_it_opens_cannot_connect(
+    soundbar: FakeSoundbar,
+) -> None:
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
+        connect = link.connect
+
+        async def drop_at_once(**kwargs: Any) -> None:
+            await connect(**kwargs)
+            link.close(ConnectionResetError(104, "Connection reset by peer"))
+            await asyncio.sleep(0)
+
+        link.connect = drop_at_once  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
+    # A CannotConnect, as setup expects.
+    with pytest.raises(HandshakeFailed, match="as it opened"):
+        await client.connect()
+    assert not client.connected
+
+
+async def test_nothing_is_sent_while_the_link_is_opening(
+    soundbar: FakeSoundbar,
+) -> None:
+    opening = asyncio.Event()
+
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
+        connect = link.connect
+
+        async def slow(**kwargs: Any) -> None:
+            opening.set()
+            await asyncio.sleep(0.05)
+            await connect(**kwargs)
+
+        link.connect = slow  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
+    connecting = asyncio.ensure_future(client.connect())
+    await opening.wait()
+    with pytest.raises(NotConnected):
+        await client._send(Frame(0x00, 0x02))
+    await connecting
+    assert client.connected
+
+
+async def test_a_close_that_hangs_lets_the_link_go(
+    soundbar: FakeSoundbar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("lg_soundbar_bluetooth.client.CLOSE_TIMEOUT", 0.05)
+    links: list[Any] = []
+
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
+
+        async def hang() -> None:
+            await asyncio.sleep(10)
+
+        link.disconnect = hang  # type: ignore[method-assign]
+        links.append(link)
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
+    await client.connect()
+    await client.disconnect()
+    assert not client.connected
+    # The next connect opens a new link rather than finding the old one.
+    links[0].close()
+    await client.connect()
+    assert client.connected
+    assert len(links) == 2

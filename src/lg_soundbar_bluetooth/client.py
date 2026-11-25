@@ -69,7 +69,9 @@ MTK_BOOT_RESTARTS = 2
 # Values of MTK_BOOT_STATE.
 MTK_BOOT_STARTED = 0x00
 MTK_BOOT_COMPLETED = 0x01
-CLOSE_TIMEOUT = 2.0
+# Longer than bluetooth-classic takes to close a link (up to 2 s sending
+# what is queued, then closing the channel).
+CLOSE_TIMEOUT = 5.0
 
 
 class Link(Protocol):
@@ -79,6 +81,10 @@ class Link(Protocol):
     connected_at: float | None
     #: Why the link last ended: ``None`` when closed here.
     disconnect_reason: Exception | None
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether the link is open."""
 
     async def connect(
         self, *, timeout: float | None = None, write_on_connect: bytes = b""
@@ -326,6 +332,10 @@ class LGSoundbar:
                 await link.disconnect()
         except TimeoutError:
             _LOGGER.debug("Connection to %s did not close in time", self.address)
+            if self._link is link:
+                # Let it go: a later connect() opens a new link rather than
+                # finding this one, and its late end is ignored.
+                self._handle_connection_lost(link, None)
 
     async def refresh(self, *, flags: bool = True) -> None:
         """Ask the soundbar to report its whole state again.
@@ -555,8 +565,9 @@ class LGSoundbar:
             raise
         if self._link is not link:
             # It dropped as it opened.
-            raise NotConnected(
-                f"{self.address} closed the connection ({self._close_reason!r})"
+            raise HandshakeFailed(
+                f"{self.address} closed the connection as it opened"
+                f" ({self._close_reason!r})"
             )
         opened_at = self._opened_at = (
             self._opened_at or link.connected_at or time.monotonic()
@@ -800,7 +811,7 @@ class LGSoundbar:
         return function
 
     async def _send(self, frame: Frame) -> None:
-        if self._link is None:
+        if self._link is None or not self._link.is_connected:
             raise NotConnected(f"{self.address} is not connected")
         self._write(frame)
 
