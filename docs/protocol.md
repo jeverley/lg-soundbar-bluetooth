@@ -17,13 +17,11 @@ firmware, resets settings or only serves LG's own diagnostics).
   An LG G1 uses channel 10; an LG US70TR uses channel 2.
   Here BlueZ connects the service by its UUID (its profile API) and finds
   the channel itself, reusing records it already has: a connection takes
-  0.3 to 2.5 s on an LG G1, with no lookup of its own each time. The
-  opening request is written the moment the connection is handed over
-  (within 1 ms when written inside BlueZ's call; 1 to 6 ms through
-  aio-rfcomm, which `bluetooth-classic` 0.7 uses, on two start-ups so
-  far), and an LG G1 still reports the input it was on before moving to
-  Bluetooth (first input 0.03 to 0.15 s after the handover, the move 0.19
-  to 0.63 s; once only 49 ms apart). A lookup of the service (SDP) is a
+  0.2 to 2.5 s on an LG G1, with no lookup of its own each time. The
+  opening request is written within a few milliseconds of the connection
+  opening, and an LG G1 still reports the input it was on before moving to
+  Bluetooth (first input 0.03 to 0.15 s after the handover, the move 0.12
+  to 0.64 s; once only 49 ms apart). A lookup of the service (SDP) is a
   Bluetooth connection, which wakes a soundbar that is off; on an LG G1
   that is on it takes about 1.7 s and does not move it to Bluetooth. Its
   record names the service "Serial Port Server Port 1".

@@ -191,14 +191,6 @@ async def test_soundbar_closing_during_handshake_cannot_connect(
     assert soundbar.connections == 1
 
 
-async def test_the_channel_used_is_kept(soundbar: FakeSoundbar) -> None:
-    client = make_client(soundbar)
-    assert client.channel is None
-    await client.connect()
-    # As the connector reports it.
-    assert client.channel == 10
-
-
 async def test_bluez_failing_to_connect_cannot_connect(
     soundbar: FakeSoundbar,
 ) -> None:

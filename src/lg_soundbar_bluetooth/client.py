@@ -87,11 +87,7 @@ class Connector(Protocol):
         *,
         write_on_connect: bytes,
     ) -> Awaitable[tuple[asyncio.Transport, asyncio.Protocol]]:
-        """Open the soundbar's serial port, writing write_on_connect at once.
-
-        The transport's ``get_extra_info("rfcomm_channel")``, if given, is
-        the channel the link is on.
-        """
+        """Open the soundbar's serial port, writing write_on_connect at once."""
 
 
 async def _open_link(
@@ -167,8 +163,6 @@ class LGSoundbar:
     ) -> None:
         """Create a client; call connect() to open the connection."""
         self.address = normalize_address(address)
-        # The RFCOMM channel of the last connection, if the connector said.
-        self.channel: int | None = None
         self.state = SoundbarState()
         self._connector = connector
         self._send_interval = send_interval
@@ -565,10 +559,7 @@ class LGSoundbar:
             # A connector whose protocol was not told the connection opened.
             opened_at = self._attach(protocol, transport)  # type: ignore[arg-type]
         self._timings["connecting"] = round(opened_at - started, 3)
-        used = transport.get_extra_info("rfcomm_channel")
-        if isinstance(used, int):
-            self.channel = used
-        _LOGGER.debug("Opened RFCOMM channel %s of %s", used, self.address)
+        _LOGGER.debug("Opened the Serial Port service of %s", self.address)
         _LOGGER.debug("Sent %s as the connection opened", opening_request)
         try:
             await self._handshake()

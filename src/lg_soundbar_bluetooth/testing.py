@@ -17,11 +17,8 @@ ADDRESS = "AA:BB:CC:DD:EE:FF"
 class FakeTransport(asyncio.Transport):
     """Records writes and hands them to a fake soundbar."""
 
-    def __init__(
-        self, soundbar: FakeSoundbar, protocol: asyncio.Protocol, channel: int
-    ) -> None:
-        # As bluetooth-classic's transport reports it.
-        super().__init__({"rfcomm_channel": channel})
+    def __init__(self, soundbar: FakeSoundbar, protocol: asyncio.Protocol) -> None:
+        super().__init__()
         self._soundbar = soundbar
         self._protocol = protocol
         self._parser = FrameParser()
@@ -122,8 +119,6 @@ class FakeSoundbar:
         self.firmware = {7: ("MAIN", "B210414A"), 5: ("MICOM", "M2103110")}
         self.model = "G1"
         self.silent = False
-        # The RFCOMM channel its Serial Port service is on, as on a real G1.
-        self.serial_port_channel = 10
         # Close the connection after receiving this many frames, as a G1 did.
         self.drop_after: int | None = None
         self.transport: FakeTransport | None = None
@@ -317,7 +312,7 @@ class FakeSoundbar:
             self.off = False
             self.function = 0x07
         protocol = protocol_factory()
-        self.transport = FakeTransport(self, protocol, self.serial_port_channel)
+        self.transport = FakeTransport(self, protocol)
         protocol.connection_made(self.transport)
         if (
             self.move_before_answering
