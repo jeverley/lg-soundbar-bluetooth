@@ -1,6 +1,30 @@
 # CHANGELOG
 
 
+## v0.4.1 (2026-11-25)
+
+### Bug Fixes
+
+- Use bluetooth-classic 0.7, which opens links with aio-rfcomm
+  ([`e757c3c`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/e757c3c89c471a8d9afdb2d8808b3df4cb03e9c0))
+
+bluetooth-classic 0.7 opens RFCOMM links with aio-rfcomm; open_rfcomm() is unchanged, so the client
+  needs no change. Links no longer report their channel, so client.channel stays None.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Documentation
+
+- Waking a G1 over Bluetooth needs Auto Power on
+  ([`95b3a3d`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/95b3a3d7c693df4973b9d8edbb8730b88504e5a0))
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.4.0 (2026-11-24)
 
 ### Documentation
