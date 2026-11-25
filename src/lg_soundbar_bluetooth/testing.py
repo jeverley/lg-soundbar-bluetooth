@@ -1,50 +1,81 @@
 """A fake LG soundbar for tests, used in place of a Bluetooth connection.
 
-It answers the way an LG G1 does: pass ``FakeSoundbar().connector`` as the
-client's ``connector`` to test an application without a soundbar.
+It answers the way an LG G1 does: pass ``FakeSoundbar().link_factory`` as
+the client's ``link_factory`` to test an application without a soundbar.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
+import time
 from collections.abc import Callable
+from typing import Any
 
 from .protocol import Frame, FrameParser
 
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 
 
-class FakeTransport(asyncio.Transport):
-    """Records writes and hands them to a fake soundbar."""
+class FakeLink:
+    """A link to the fake soundbar, shaped like bluetooth-classic's RfcommClient."""
 
-    def __init__(self, soundbar: FakeSoundbar, protocol: asyncio.Protocol) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        soundbar: FakeSoundbar,
+        address: str,
+        data_callback: Callable[[bytes], None],
+        disconnected_callback: Callable[[Any], None],
+    ) -> None:
         self._soundbar = soundbar
-        self._protocol = protocol
+        self.address = address
+        self._data_callback = data_callback
+        self._disconnected_callback = disconnected_callback
         self._parser = FrameParser()
-        self.closed = False
+        self.closed = True
+        self.connected_at: float | None = None
+        self.disconnect_reason: Exception | None = None
+        self._ended: asyncio.Event | None = None
 
-    def write(self, data: bytes | bytearray | memoryview) -> None:
+    async def connect(
+        self, *, timeout: float | None = None, write_on_connect: bytes = b""
+    ) -> None:
+        """Connect to the fake soundbar."""
+        self._soundbar._connect(self, write_on_connect)
+
+    def deliver(self, data: bytes) -> None:
+        """Pass bytes from the soundbar to the client at once."""
+        self._data_callback(data)
+
+    def write_nowait(self, data: bytes) -> None:
         """Hand each frame written to the fake soundbar and deliver its replies."""
+        if self.closed:
+            raise OSError(errno.ENOTCONN, "Not connected")
         for frame in self._parser.feed(bytes(data)):
             self._soundbar.sent.append(frame)
             if len(self._soundbar.sent) == self._soundbar.drop_after:
                 self.close()
                 return
             for reply in self._soundbar.replies_to(frame):
-                asyncio.get_running_loop().call_soon(
-                    self._protocol.data_received, reply.encode()
-                )
+                asyncio.get_running_loop().call_soon(self.deliver, reply.encode())
 
     def close(self, exc: Exception | None = None) -> None:
-        """Close the connection, as the soundbar resetting it would."""
-        if not self.closed:
-            self.closed = True
-            asyncio.get_running_loop().call_soon(self._protocol.connection_lost, exc)
+        """End the link, as the soundbar resetting it would."""
+        if self.closed:
+            return
+        self.closed = True
+        self.disconnect_reason = exc
+        loop = asyncio.get_running_loop()
+        loop.call_soon(self._disconnected_callback, self)
+        if self._ended is not None:
+            loop.call_soon(self._ended.set)
 
-    def is_closing(self) -> bool:
-        """Return whether the connection is closed."""
-        return self.closed
+    async def disconnect(self) -> None:
+        """Close the link and wait until the client has been told."""
+        ended = self._ended
+        self.close()
+        if ended is not None:
+            await ended.wait()
 
 
 class FakeSoundbar:
@@ -121,7 +152,7 @@ class FakeSoundbar:
         self.silent = False
         # Close the connection after receiving this many frames, as a G1 did.
         self.drop_after: int | None = None
-        self.transport: FakeTransport | None = None
+        self.link: FakeLink | None = None
         self.connections = 0
         # Switched off: connecting wakes it on Bluetooth, as a G1 with BT LOCK off.
         self.off = False
@@ -284,36 +315,39 @@ class FakeSoundbar:
 
     def _jump(self, function: int) -> None:
         self.function = function
-        if self.transport is not None and not self.transport.closed:
-            self.transport._protocol.data_received(
-                Frame(0x00, 0x0B, bytes([function])).encode()
-            )
+        if self.link is not None and not self.link.closed:
+            self.link.deliver(Frame(0x00, 0x0B, bytes([function])).encode())
 
     def switch_off(self) -> None:
         """Switch off, resetting the connection as a G1 does."""
         self.off = True
         # The input it was on when switched off, which it then remembers.
         self.switched_off_on = self.function
-        if self.transport is not None:
-            self.transport.close(ConnectionResetError(104, "Connection reset by peer"))
+        if self.link is not None:
+            self.link.close(ConnectionResetError(104, "Connection reset by peer"))
 
-    async def connector(
+    def link_factory(
         self,
         address: str,
-        protocol_factory: Callable[[], asyncio.Protocol],
-        timeout: float,
         *,
-        write_on_connect: bytes,
-    ) -> tuple[asyncio.Transport, asyncio.Protocol]:
-        """Connect to the fake soundbar, as the client's connector does."""
+        data_callback: Callable[[bytes], None],
+        disconnected_callback: Callable[[Any], None],
+    ) -> FakeLink:
+        """Make a link to the fake soundbar, as the client's link factory does."""
+        return FakeLink(self, address, data_callback, disconnected_callback)
+
+    def _connect(self, link: FakeLink, write_on_connect: bytes) -> None:
+        """Open a link, as connecting to a G1 does."""
         self.connections += 1
         self._fresh = True
         if self.off:
             self.off = False
             self.function = 0x07
-        protocol = protocol_factory()
-        self.transport = FakeTransport(self, protocol)
-        protocol.connection_made(self.transport)
+        self.link = link
+        link.closed = False
+        link.disconnect_reason = None
+        link.connected_at = time.monotonic()
+        link._ended = asyncio.Event()
         if (
             self.move_before_answering
             and self.switch_to_bt_on_connect
@@ -321,23 +355,22 @@ class FakeSoundbar:
         ):
             self._fresh = False
             self.function = 0x07
-            protocol.data_received(Frame(0x00, 0x0B, b"\x07").encode())
+            link.deliver(Frame(0x00, 0x0B, b"\x07").encode())
         if self.mtk_boot_seconds is not None or self.mtk_booting:
             self.mtk_booting = True
-            protocol.data_received(Frame(0x00, 0x18, b"\x00").encode())
+            link.deliver(Frame(0x00, 0x18, b"\x00").encode())
             if self.mtk_boot_seconds is not None:
                 asyncio.get_running_loop().call_later(
-                    self.mtk_boot_seconds, self._finish_booting, protocol
+                    self.mtk_boot_seconds, self._finish_booting, link
                 )
         if write_on_connect:
-            self.transport.write(write_on_connect)
-        return self.transport, protocol
+            link.write_nowait(write_on_connect)
 
-    def _finish_booting(self, protocol: asyncio.Protocol) -> None:
+    def _finish_booting(self, link: FakeLink) -> None:
         self.mtk_booting = False
         self.mtk_boot_seconds = None
-        if self.transport is not None and not self.transport.closed:
-            protocol.data_received(Frame(0x00, 0x18, b"\x01").encode())
+        if not link.closed:
+            link.deliver(Frame(0x00, 0x18, b"\x01").encode())
 
     def _firmware_info(self, chip: int) -> bytes:
         """Return a FIRMWARE_INFO reply laid out as the LG app reads it."""

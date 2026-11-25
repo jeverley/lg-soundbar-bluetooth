@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import errno
 import logging
 import time
 from asyncio import FIRST_COMPLETED
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-from bluetooth_classic import SERIAL_PORT, normalize_address, open_rfcomm
+from bluetooth_classic import (
+    SERIAL_PORT,
+    RfcommClient,
+    establish_rfcomm_connection,
+    normalize_address,
+)
 
 from .const import (
     COMBINED_ARC_FUNCTIONS,
@@ -66,63 +70,54 @@ MTK_BOOT_RESTARTS = 2
 MTK_BOOT_STARTED = 0x00
 MTK_BOOT_COMPLETED = 0x01
 CLOSE_TIMEOUT = 2.0
-# Linux reports EBUSY for a moment after an RFCOMM link to the same channel
-# closes, for example when setup's test connection has just ended.
-BUSY_RETRIES = 3
-BUSY_DELAY = 1.0
 
 
-class Connector(Protocol):
-    """Opens a connection and attaches the protocol to it."""
+class Link(Protocol):
+    """A connection to the soundbar's serial port, as RfcommClient is."""
+
+    #: When the link last opened, in ``time.monotonic()`` seconds.
+    connected_at: float | None
+    #: Why the link last ended: ``None`` when closed here.
+    disconnect_reason: Exception | None
+
+    async def connect(
+        self, *, timeout: float | None = None, write_on_connect: bytes = b""
+    ) -> None:
+        """Open the link, sending write_on_connect the moment it opens."""
+
+    def write_nowait(self, data: bytes) -> None:
+        """Queue bytes to send, in order."""
+
+    async def disconnect(self) -> None:
+        """Close the link and wait until it is closed."""
+
+
+class LinkFactory(Protocol):
+    """Makes a link to the soundbar, not yet connected."""
 
     def __call__(
         self,
         address: str,
-        protocol_factory: Callable[[], asyncio.Protocol],
-        timeout: float,
         *,
-        write_on_connect: bytes,
-    ) -> Awaitable[tuple[asyncio.Transport, asyncio.Protocol]]:
-        """Open the soundbar's serial port, writing write_on_connect at once."""
+        data_callback: Callable[[bytes], None],
+        disconnected_callback: Callable[[Any], None],
+    ) -> Link:
+        """Return a link that passes data and its end to the callbacks."""
 
 
-async def _open_link(
+def _rfcomm_client(
     address: str,
-    protocol_factory: Callable[[], asyncio.Protocol],
-    timeout: float,
     *,
-    write_on_connect: bytes,
-) -> tuple[asyncio.Transport, asyncio.Protocol]:
-    """Open the soundbar's Serial Port service through bluetooth-classic."""
-    return await open_rfcomm(
+    data_callback: Callable[[bytes], None],
+    disconnected_callback: Callable[[Any], None],
+) -> RfcommClient:
+    """The soundbar's Serial Port service, through bluetooth-classic."""
+    return RfcommClient(
         address,
-        protocol_factory,
         service=SERIAL_PORT,
-        timeout=timeout,
-        write_on_connect=write_on_connect,
+        data_callback=data_callback,
+        disconnected_callback=disconnected_callback,
     )
-
-
-class _SoundbarProtocol(asyncio.Protocol):
-    """Feeds received bytes to the client as frames."""
-
-    def __init__(self, client: LGSoundbar) -> None:
-        self._client = client
-        self._parser = FrameParser()
-        self.closed = asyncio.Event()
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        # Before any data is handled: replies to the request the connector
-        # sent may already be waiting.
-        self._client._attach(self, transport)
-
-    def data_received(self, data: bytes) -> None:
-        for frame in self._parser.feed(data):
-            self._client._handle_frame(frame)
-
-    def connection_lost(self, exc: Exception | None) -> None:
-        self.closed.set()
-        self._client._handle_connection_lost(self, exc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +144,7 @@ class LGSoundbar:
         self,
         address: str,
         *,
-        connector: Connector = _open_link,
+        link_factory: LinkFactory = _rfcomm_client,
         send_interval: float = SEND_INTERVAL,
         settle_quiet: float = SETTLE_QUIET,
         settle_max: float = SETTLE_MAX,
@@ -160,7 +155,7 @@ class LGSoundbar:
         """Create a client; call connect() to open the connection."""
         self.address = normalize_address(address)
         self.state = SoundbarState()
-        self._connector = connector
+        self._link_factory = link_factory
         self._send_interval = send_interval
         self._settle_quiet = settle_quiet
         self._settle_max = settle_max
@@ -178,8 +173,9 @@ class LGSoundbar:
         self._waiting_for: tuple[Frame, asyncio.Future[None]] | None = None
         # One connect() at a time: a second call waits for the first.
         self._connect_lock = asyncio.Lock()
-        self._transport: asyncio.Transport | None = None
-        self._protocol: _SoundbarProtocol | None = None
+        self._link: Link | None = None
+        # Tasks closing links dropped mid-connect; kept so they finish.
+        self._closing: set[asyncio.Task[None]] = set()
         self._callbacks: list[Callable[[], None]] = []
         self._function_known = asyncio.Event()
         self._last_frame = 0.0
@@ -214,7 +210,7 @@ class LGSoundbar:
     @property
     def connected(self) -> bool:
         """Return whether the connection is open and initialised."""
-        return self._transport is not None and self._ready
+        return self._link is not None and self._ready
 
     @property
     def initial_function(self) -> int | None:
@@ -296,11 +292,12 @@ class LGSoundbar:
         connect() then waits until the soundbar is on that input, selects it
         again if it is not, and records how it went in input_restore.
 
-        The connector opens the soundbar's Serial Port service; BlueZ finds
-        its channel.
+        The link factory makes the link to the soundbar's Serial Port
+        service; it is connected with establish_rfcomm_connection(), which
+        tries again while BlueZ says the soundbar is busy.
         """
         async with self._connect_lock:
-            if self._transport is not None:
+            if self._link is not None:
                 return
             self.input_restore = None
             await self._open(timeout, keep_input)
@@ -310,7 +307,7 @@ class LGSoundbar:
     async def _open(self, timeout: float, keep_input: bool) -> None:
         self._keep_input = keep_input
         try:
-            await self._connect_when_free(timeout)
+            await self._connect_once(timeout)
         except CannotConnect:
             raise
         except (OSError, TimeoutError) as err:
@@ -320,16 +317,15 @@ class LGSoundbar:
             ) from err
 
     async def disconnect(self) -> None:
-        """Close the connection and wait until the socket is closed."""
-        protocol = self._protocol
-        if self._transport is not None:
-            self._transport.close()
-        if protocol is not None:
-            try:
-                async with asyncio.timeout(CLOSE_TIMEOUT):
-                    await protocol.closed.wait()
-            except TimeoutError:
-                _LOGGER.debug("Connection to %s did not close in time", self.address)
+        """Close the connection and wait until it is closed."""
+        link = self._link
+        if link is None:
+            return
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await link.disconnect()
+        except TimeoutError:
+            _LOGGER.debug("Connection to %s did not close in time", self.address)
 
     async def refresh(self, *, flags: bool = True) -> None:
         """Ask the soundbar to report its whole state again.
@@ -506,18 +502,6 @@ class LGSoundbar:
             Frame(Category.GENERAL, GeneralCommand.POWER_CONTROL, bytes((0,)))
         )
 
-    async def _connect_when_free(self, timeout: float) -> None:
-        for attempt in range(BUSY_RETRIES + 1):
-            try:
-                await self._connect_once(timeout)
-            except OSError as err:
-                if err.errno != errno.EBUSY or attempt == BUSY_RETRIES:
-                    raise
-                _LOGGER.debug("RFCOMM link to %s is still busy; retrying", self.address)
-                await asyncio.sleep(BUSY_DELAY)
-            else:
-                return
-
     async def _connect_once(self, timeout: float) -> None:
         _LOGGER.debug("Connecting to the Serial Port service of %s", self.address)
         self._ready = False
@@ -541,32 +525,55 @@ class LGSoundbar:
         self._switched_back_again = False
         self.state = SoundbarState()
         started = time.monotonic()
-        # The connector writes it the moment the connection opens, so a busy
-        # event loop cannot delay it.
+        # The link sends it the moment the connection opens, so a busy event
+        # loop cannot delay it.
         opening_request = Frame(Category.GENERAL, GeneralCommand.MODE)
-        transport, protocol = await self._connector(
-            self.address,
-            lambda: _SoundbarProtocol(self),
-            timeout,
-            write_on_connect=opening_request.encode(),
+        parser = FrameParser()
+
+        def on_data(data: bytes) -> None:
+            if self._link is not link:
+                return
+            if self._opened_at is None:
+                self._opened_at = link.connected_at or time.monotonic()
+            for frame in parser.feed(data):
+                self._handle_frame(frame)
+
+        def on_disconnected(lost: Link) -> None:
+            self._handle_connection_lost(lost, lost.disconnect_reason)
+
+        link = self._link_factory(
+            self.address, data_callback=on_data, disconnected_callback=on_disconnected
         )
-        opened_at = self._opened_at
-        if opened_at is None:
-            # A connector whose protocol was not told the connection opened.
-            opened_at = self._attach(protocol, transport)  # type: ignore[arg-type]
+        self._link = link
+        try:
+            await establish_rfcomm_connection(
+                link, timeout=timeout, write_on_connect=opening_request.encode()
+            )
+        except BaseException:
+            if self._link is link:
+                self._link = None
+            raise
+        if self._link is not link:
+            # It dropped as it opened.
+            raise NotConnected(
+                f"{self.address} closed the connection ({self._close_reason!r})"
+            )
+        opened_at = self._opened_at = (
+            self._opened_at or link.connected_at or time.monotonic()
+        )
         self._timings["connecting"] = round(opened_at - started, 3)
         _LOGGER.debug("Opened the Serial Port service of %s", self.address)
         _LOGGER.debug("Sent %s as the connection opened", opening_request)
         try:
             await self._handshake()
         except NotConnected as err:
-            self._drop_transport()
+            await self._drop_link()
             raise HandshakeFailed(
                 f"{self.address} closed the connection during the handshake"
                 f" ({self._close_reason!r})"
             ) from err
         except BaseException:
-            self._drop_transport()
+            await self._drop_link()
             raise
         self._ready = True
         if self.state.features is not None:
@@ -583,7 +590,7 @@ class LGSoundbar:
 
         A soundbar that is on moves to Bluetooth as a connection opens and
         only reports the input it was on if asked before then. So the current
-        input is asked for first and alone, by the connector as the connection
+        input is asked for first and alone, by the link as the connection
         opens, and nothing else is sent until it is reported.
 
         Then the app's sequence: its opening messages (which the app sends
@@ -592,7 +599,7 @@ class LGSoundbar:
         feature list, then the extended feature flags if the feature list
         says the soundbar has them, then the settings.
         """
-        if self._transport is None:
+        if self._link is None:
             # Closed (reset) before Home Assistant took over the connection.
             raise NotConnected(f"{self.address} closed the connection")
         again = False
@@ -706,7 +713,7 @@ class LGSoundbar:
                 ]
             )
             await self._wait_until_quiet()
-        if self._transport is None:
+        if self._link is None:
             raise HandshakeFailed(
                 f"{self.address} closed the connection while reporting its state"
                 f" ({self._close_reason!r})"
@@ -786,14 +793,14 @@ class LGSoundbar:
             await asyncio.sleep(min(quiet_until, deadline) - now)
 
     def _require_function(self) -> int:
-        if self._transport is None:
+        if self._link is None:
             raise NotConnected(f"{self.address} is not connected")
         if (function := self.state.function) is None:
             raise NotConnected(f"{self.address} has not reported its input")
         return function
 
     async def _send(self, frame: Frame) -> None:
-        if self._transport is None:
+        if self._link is None:
             raise NotConnected(f"{self.address} is not connected")
         self._write(frame)
 
@@ -804,10 +811,14 @@ class LGSoundbar:
             await self._send(frame)
 
     def _write(self, frame: Frame) -> None:
-        if self._transport is None:
+        link = self._link
+        if link is None:
             return
         _LOGGER.debug("Sending %s", frame)
-        self._transport.write(frame.encode())
+        try:
+            link.write_nowait(frame.encode())
+        except OSError:
+            _LOGGER.debug("Not sent: the connection to %s has ended", self.address)
 
     def _handle_frame(self, frame: Frame) -> None:
         self._last_frame = asyncio.get_running_loop().time()
@@ -892,7 +903,7 @@ class LGSoundbar:
     def _maybe_switch_back(self) -> None:
         """Switch back; for Optical, ARC and eARC once the flags are known."""
         function = self._moved_from
-        if function is None or self._transport is None:
+        if function is None or self._link is None:
             return
         if (code := self._switch_back_code(function)) is not None:
             self._switch_back(code)
@@ -1025,24 +1036,13 @@ class LGSoundbar:
         _LOGGER.debug("%s: selecting %02x again", self.address, code)
         self._write(Frame(Category.GENERAL, GeneralCommand.SET_MODE, bytes((code,))))
 
-    def _attach(
-        self, protocol: _SoundbarProtocol, transport: asyncio.BaseTransport
-    ) -> float:
-        """Take over the connection the connector opened; return when it opened."""
-        self._transport = transport  # type: ignore[assignment]
-        self._protocol = protocol
-        opened_at = self._opened_at = time.monotonic()
-        return opened_at
-
     def _mark(self, step: str) -> None:
         """Record when a handshake step first happened."""
         if self._opened_at is not None and step not in self._timings:
             self._timings[step] = round(time.monotonic() - self._opened_at, 3)
 
-    def _handle_connection_lost(
-        self, protocol: _SoundbarProtocol, exc: Exception | None
-    ) -> None:
-        if protocol is not self._protocol:
+    def _handle_connection_lost(self, link: Link, exc: Exception | None) -> None:
+        if link is not self._link:
             return
         if self._waiting_for is not None and not self._waiting_for[1].done():
             self._waiting_for[1].set_exception(
@@ -1055,20 +1055,26 @@ class LGSoundbar:
             if was_ready and self._ready_at is not None
             else None
         )
-        self._transport = None
-        self._protocol = None
+        self._link = None
         self._ready = False
         _LOGGER.debug("Connection to %s closed: %r", self.address, exc)
         if was_ready:
             self._notify()
 
-    def _drop_transport(self) -> None:
-        transport = self._transport
-        self._transport = None
-        self._protocol = None
+    async def _drop_link(self) -> None:
+        """Close a link the start-up gave up on, and wait (briefly) for it."""
+        link = self._link
+        self._link = None
         self._ready = False
-        if transport is not None:
-            transport.close()
+        if link is None:
+            return
+        task = asyncio.ensure_future(link.disconnect())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+        # Shielded: a cancelled connect still closes the link it opened.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await asyncio.shield(task)
 
     def _notify(self) -> None:
         for callback in list(self._callbacks):

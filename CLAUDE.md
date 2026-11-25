@@ -3,8 +3,9 @@
 `lg-soundbar-bluetooth`: control LG soundbars over Bluetooth Classic
 (RFCOMM, the Serial Port Profile), speaking the soundbar's Bluetooth serial
 protocol, as LG's Sound Bar app uses it. The Bluetooth link comes
-from `bluetooth-classic` (its `open_rfcomm()`, through the client's
-connector); everything about the soundbar lives here.
+from `bluetooth-classic` (its `RfcommClient`, made by the client's link
+factory and connected with `establish_rfcomm_connection()`); everything
+about the soundbar lives here.
 It follows the layout and tooling of Home Assistant's Bluetooth libraries
 (the Bluetooth-Devices organisation): Poetry, `src/` layout, typed, pytest,
 mypy, ruff, pre-commit, python-semantic-release, Read the Docs.

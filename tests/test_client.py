@@ -27,7 +27,7 @@ from lg_soundbar_bluetooth.testing import ADDRESS, FakeSoundbar
 def make_client(soundbar: FakeSoundbar, **kwargs: Any) -> LGSoundbar:
     return LGSoundbar(
         ADDRESS,
-        connector=kwargs.pop("connector", soundbar.connector),
+        link_factory=kwargs.pop("link_factory", soundbar.link_factory),
         send_interval=0,
         settle_quiet=0.05,
         settle_max=0.5,
@@ -137,9 +137,9 @@ async def test_watchdog_is_answered(soundbar: FakeSoundbar) -> None:
     client = make_client(soundbar)
     await client.connect()
     soundbar.sent.clear()
-    assert soundbar.transport is not None
+    assert soundbar.link is not None
 
-    soundbar.transport._protocol.data_received(Frame(0x00, 0x02).encode())
+    soundbar.link.deliver(Frame(0x00, 0x02).encode())
 
     assert soundbar.sent == [Frame(0x00, 0x02)]
 
@@ -173,7 +173,7 @@ async def test_silent_device_fails_handshake(
 
     with pytest.raises(CannotConnect):
         await client.connect()
-    assert soundbar.transport is not None and soundbar.transport.closed
+    assert soundbar.link is not None and soundbar.link.closed
     assert not client.connected
 
 
@@ -194,10 +194,16 @@ async def test_soundbar_closing_during_handshake_cannot_connect(
 async def test_bluez_failing_to_connect_cannot_connect(
     soundbar: FakeSoundbar,
 ) -> None:
-    async def connector(address, factory, timeout, **kwargs):
-        raise RfcommConnectError(f"BlueZ could not connect to {address}")
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
 
-    client = make_client(soundbar, connector=connector)
+        async def refuse(**kwargs: Any) -> None:
+            raise RfcommConnectError(f"BlueZ could not connect to {address}")
+
+        link.connect = refuse  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
     with pytest.raises(CannotConnect):
         await client.connect()
 
@@ -205,11 +211,17 @@ async def test_bluez_failing_to_connect_cannot_connect(
 async def test_unreachable_soundbar_cannot_connect(soundbar: FakeSoundbar) -> None:
     tried = []
 
-    async def connector(address, factory, timeout, **kwargs):
-        tried.append(address)
-        raise OSError(112, "Host is down")
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
 
-    client = make_client(soundbar, connector=connector)
+        async def down(**kwargs: Any) -> None:
+            tried.append(address)
+            raise OSError(112, "Host is down")
+
+        link.connect = down  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
     with pytest.raises(CannotConnect):
         await client.connect()
     assert tried == [ADDRESS]
@@ -218,16 +230,23 @@ async def test_unreachable_soundbar_cannot_connect(soundbar: FakeSoundbar) -> No
 async def test_busy_channel_is_retried(
     soundbar: FakeSoundbar, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("lg_soundbar_bluetooth.client.BUSY_DELAY", 0)
+    monkeypatch.setattr("bluetooth_classic.rfcomm.RETRY_DELAY", 0)
     attempts = []
 
-    async def connector(address, factory, timeout, **kwargs):
-        attempts.append(address)
-        if len(attempts) < 3:
-            raise OSError(16, "Resource busy")
-        return await soundbar.connector(address, factory, timeout, **kwargs)
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
+        connect = link.connect
 
-    client = make_client(soundbar, connector=connector)
+        async def busy_at_first(**kwargs: Any) -> None:
+            attempts.append(address)
+            if len(attempts) < 3:
+                raise OSError(16, "Resource busy")
+            await connect(**kwargs)
+
+        link.connect = busy_at_first  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
     await client.connect()
     assert len(attempts) == 3
     assert client.connected
@@ -237,7 +256,7 @@ async def test_disconnect_waits_for_close(soundbar: FakeSoundbar) -> None:
     client = make_client(soundbar)
     await client.connect()
     await client.disconnect()
-    assert soundbar.transport is not None and soundbar.transport.closed
+    assert soundbar.link is not None and soundbar.link.closed
     assert not client.connected
 
 
@@ -767,14 +786,19 @@ async def test_input_restore_when_the_soundbar_switches_off(
 async def test_overlapping_connects_open_one_connection(
     soundbar: FakeSoundbar,
 ) -> None:
-    original = soundbar.connector
+    def link_factory(address: str, **callbacks: Any) -> Any:
+        link = soundbar.link_factory(address, **callbacks)
+        connect = link.connect
 
-    async def slow_connector(*args: Any, **kwargs: Any) -> Any:
-        # Opening a Bluetooth link takes a while.
-        await asyncio.sleep(0.05)
-        return await original(*args, **kwargs)
+        async def slow(**kwargs: Any) -> None:
+            # Opening a Bluetooth link takes a while.
+            await asyncio.sleep(0.05)
+            await connect(**kwargs)
 
-    client = make_client(soundbar, connector=slow_connector)
+        link.connect = slow  # type: ignore[method-assign]
+        return link
+
+    client = make_client(soundbar, link_factory=link_factory)
     await asyncio.gather(client.connect(), client.connect())
     assert soundbar.connections == 1
     assert client.connected
