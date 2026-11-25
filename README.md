@@ -49,7 +49,9 @@ in your own asyncio event loop:
 
 The Bluetooth link comes from
 [bluetooth-classic](https://github.com/jeverley/bluetooth-classic), which
-opens it through [serialx](https://github.com/puddly/serialx). For LG soundbars
+provides serialx's `rfcomm://` handler; the client opens the link through
+[serialx](https://github.com/puddly/serialx), as serial devices in Home
+Assistant are. For LG soundbars
 with Wi-Fi, see [temescal](https://github.com/google/python-temescal). The
 protocol is documented in [docs/protocol.md](https://github.com/jeverley/lg-soundbar-bluetooth/blob/main/docs/protocol.md).
 

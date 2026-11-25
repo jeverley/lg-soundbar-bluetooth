@@ -12,11 +12,9 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
-from bluetooth_classic import (
-    SERIAL_PORT,
-    normalize_address,
-    open_rfcomm,
-)
+# Importing bluetooth_classic also registers its rfcomm:// handler with serialx.
+from bluetooth_classic import SERIAL_PORT, normalize_address, rfcomm_url
+from serialx import create_serial_connection
 
 from .const import (
     COMBINED_ARC_FUNCTIONS,
@@ -97,12 +95,13 @@ async def _open_link(
     *,
     write_on_connect: bytes,
 ) -> tuple[asyncio.Transport, asyncio.Protocol]:
-    """Open the soundbar's Serial Port service; BlueZ makes the connection."""
-    return await open_rfcomm(
-        address,
+    """Open the soundbar's Serial Port service through serialx's rfcomm://."""
+    return await create_serial_connection(
+        asyncio.get_running_loop(),
         protocol_factory,
-        service=SERIAL_PORT,
-        timeout=timeout,
+        rfcomm_url(address, service=SERIAL_PORT),
+        baudrate=9600,  # Required by serialx; RFCOMM has no baud rate.
+        connect_timeout=timeout,
         write_on_connect=write_on_connect,
     )
 
