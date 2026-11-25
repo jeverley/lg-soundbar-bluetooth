@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.4.3 (2026-11-25)
+
+### Bug Fixes
+
+- Open the link through serialx directly
+  ([`a40d33d`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/a40d33d0118ca32d5111cb1aed668a078c784c9d))
+
+The client's connector calls serialx.create_serial_connection() with bluetooth-classic's rfcomm://
+  URL, as Home Assistant opens serial devices, instead of bluetooth-classic's open_rfcomm()
+  shortcut. Once serialx has the rfcomm:// handler itself, only the import changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.4.2 (2026-11-25)
 
 ### Bug Fixes
