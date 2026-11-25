@@ -509,6 +509,10 @@ What an LG G1 (with Auto Power on and BT LOCK off) does, as tested:
 - **With BT LOCK on**, it does not answer at all while off (`connect` fails
   with "Host is down"), and may refuse connections on inputs other than BT
   and LG TV.
+- **With Auto Power off**, it does not answer at all while off either: a
+  connection or lookup fails with "Host is down" (BlueZ:
+  `br-connection-page-timeout`), so it cannot be woken over Bluetooth. Auto
+  Power is `1d` (Auto power) in the settings, on with `01`.
 
 An application can therefore tell whether the soundbar is on with a
 5-second scan (for example `bluetooth-classic`'s
