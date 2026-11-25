@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.5.1 (2026-11-25)
+
+### Bug Fixes
+
+- Report a link dropped as it opens, and refuse commands while not connected
+  ([`aa0d714`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/aa0d714fe7741a696fc69fac1e6ad83227867b10))
+
+- A link that drops as it opens raises HandshakeFailed (a CannotConnect), as during the start-up,
+  instead of NotConnected. - Commands raise NotConnected unless the link is open, as before, instead
+  of being dropped while it opens or closes. Links say is_connected. - disconnect() waits up to 5 s,
+  longer than bluetooth-classic takes to close a link; if the close still hangs, the link is let go,
+  so a later connect() opens a new one. - Needs bluetooth-classic 0.8.2, which retries while an old
+  link closes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.5.0 (2026-11-25)
 
 ### Bug Fixes

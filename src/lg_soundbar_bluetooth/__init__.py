@@ -1,6 +1,6 @@
 """Control LG soundbars over Bluetooth."""
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from bluetooth_classic import normalize_address
 
