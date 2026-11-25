@@ -1,6 +1,46 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-11-25)
+
+### Bug Fixes
+
+- Open the link through bluetooth-classic 0.8, without serialx
+  ([`ae0a3c1`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/ae0a3c156ed330228c7943fe9f079f6e9384eec3))
+
+bluetooth-classic 0.8 opens RFCOMM links directly with open_rfcomm(), as the one aio-rfcomm owner in
+  the process; the client's connector calls it again, and serialx is no longer a dependency.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Features
+
+- Connect through bluetooth-classic's RfcommClient
+  ([`f394aae`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/f394aae56e3e21888adee23ac2e19bc99a97681c))
+
+The client makes its link with a link factory (by default an RfcommClient for the Serial Port
+  service) and connects it with establish_rfcomm_connection(), which retries while BlueZ says the
+  soundbar is busy, as bleak-based libraries connect with bleak-retry-connector. Data arrives
+  through the link's data callback from the first byte, and its end through the disconnected
+  callback. Breaking changes now raise the minor version until 1.0.
+
+BREAKING CHANGE: LGSoundbar's connector option is replaced by link_factory, which returns a link
+  shaped like RfcommClient, and FakeSoundbar.connector by FakeSoundbar.link_factory
+  (FakeSoundbar.transport is now FakeSoundbar.link). The client's own EBUSY retry is gone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Breaking Changes
+
+- Lgsoundbar's connector option is replaced by link_factory, which returns a link shaped like
+  RfcommClient, and FakeSoundbar.connector by FakeSoundbar.link_factory (FakeSoundbar.transport is
+  now FakeSoundbar.link). The client's own EBUSY retry is gone.
+
+
 ## v0.4.3 (2026-11-25)
 
 ### Bug Fixes
