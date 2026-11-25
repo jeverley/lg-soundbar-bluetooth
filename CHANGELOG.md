@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v0.4.2 (2026-11-25)
+
+### Bug Fixes
+
+- Drop the RFCOMM channel, which links no longer report
+  ([`8966ae7`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/8966ae76c404c4abd61fe0df2ab7621239f11bef))
+
+bluetooth-classic 0.7 links do not say which RFCOMM channel they are on, so client.channel was
+  always None: it is removed, and the client logs the service it opened instead. The protocol
+  reference gives only the timing the soundbar tolerates, and the earliest move seen (0.12 s).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+
 ## v0.4.1 (2026-11-25)
 
 ### Bug Fixes
