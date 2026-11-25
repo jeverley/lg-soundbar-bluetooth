@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-11-25)
+
+### Features
+
+- Open the link as bluetooth-classic 0.9's RfcommConnection
+  ([`7eb8537`](https://github.com/jeverley/lg-soundbar-bluetooth/commit/7eb853772763295014bfbe2ec936389613397919))
+
+The link is an RfcommConnection, named as the RFCOMM specification names it, opened with
+  establish_rfcomm_connection(). Timings start when the link really opened (opened_at, taken on
+  bluetooth-classic's own thread), not when a busy event loop saw it.
+
+BREAKING CHANGE: a link factory now returns a link shaped like RfcommConnection:
+  open(write_on_open=), close(), is_open, opened_at, close_reason, and a closed_callback in place of
+  disconnected_callback. FakeLink follows; its own way of ending the link from the soundbar's side
+  is now drop(). LGSoundbar's connect() and disconnect() are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01CciW4UG1YNtAD3yvwo7sxt
+
+### Breaking Changes
+
+- A link factory now returns a link shaped like RfcommConnection: open(write_on_open=), close(),
+  is_open, opened_at, close_reason, and a closed_callback in place of disconnected_callback.
+  FakeLink follows; its own way of ending the link from the soundbar's side is now drop().
+  LGSoundbar's connect() and disconnect() are unchanged.
+
+
 ## v0.5.1 (2026-11-25)
 
 ### Bug Fixes
