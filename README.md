@@ -109,6 +109,10 @@ async def find() -> None:
 
 See [CONTRIBUTING.md](https://github.com/jeverley/lg-soundbar-bluetooth/blob/main/CONTRIBUTING.md).
 
+Developed with AI assistance (Claude Code). Changes are reviewed and tested
+by the maintainer, and behaviour is confirmed on a real LG G1 before
+release.
+
 ## Credits
 
 Message formats were cross-checked against frames captured by
